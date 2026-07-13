@@ -540,12 +540,21 @@ def is_supabase_path(path: str | None) -> bool:
 def download_supabase_object(path: str) -> bytes:
     _, rest = path.split("://", 1)
     bucket, object_name = rest.split("/", 1)
-    url = f"{SUPABASE_URL}/storage/v1/object/{bucket}/{quote(object_name)}"
+    encoded_name = quote(object_name)
+    url = f"{SUPABASE_URL}/storage/v1/object/authenticated/{bucket}/{encoded_name}"
     response = requests.get(url, headers=supabase_headers(), timeout=30)
+    if response.status_code == 404:
+        legacy_url = f"{SUPABASE_URL}/storage/v1/object/{bucket}/{encoded_name}"
+        response = requests.get(legacy_url, headers=supabase_headers(), timeout=30)
     if response.status_code == 404:
         raise HTTPException(status_code=404, detail="הקובץ לא נמצא באחסון")
     if response.status_code >= 400:
-        raise HTTPException(status_code=502, detail="Supabase storage download failed")
+        detail = response.text[:300] if response.text else response.reason
+        print(f"warning: Supabase storage download failed: {response.status_code} {detail}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Supabase storage download failed: {response.status_code}",
+        )
     return response.content
 
 
