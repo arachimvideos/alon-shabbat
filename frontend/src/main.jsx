@@ -46,6 +46,8 @@ const emptyFilters = {
   sort_dir: "desc",
 };
 
+const initialVisibleCount = 36;
+
 function App() {
   const [parashot, setParashot] = useState([]);
   const [tags, setTags] = useState([]);
@@ -56,6 +58,7 @@ function App() {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingArticle, setEditingArticle] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [visibleCount, setVisibleCount] = useState(initialVisibleCount);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -69,6 +72,7 @@ function App() {
 
   useEffect(() => {
     setIsLoading(true);
+    setVisibleCount(initialVisibleCount);
     listArticles(filters)
       .then(setArticles)
       .catch((error) => setMessage(error.message))
@@ -80,6 +84,8 @@ function App() {
   }, [filters.tags, tags]);
 
   const featuredArticles = articles.slice(0, 5);
+  const visibleArticles = articles.slice(0, visibleCount);
+  const hasMoreArticles = visibleCount < articles.length;
 
   function updateFilter(name, value) {
     setFilters((current) => ({ ...current, [name]: value }));
@@ -335,9 +341,17 @@ function App() {
       </section>
 
       {viewMode === "cards" ? (
-        <ArticleCards articles={articles} onOpen={openArticle} />
+        <ArticleCards articles={visibleArticles} onOpen={openArticle} />
       ) : (
-        <ArticleTable articles={articles} onOpen={openArticle} />
+        <ArticleTable articles={visibleArticles} onOpen={openArticle} />
+      )}
+
+      {hasMoreArticles && (
+        <div className="load-more-row">
+          <button className="secondary-button" onClick={() => setVisibleCount((count) => count + initialVisibleCount)}>
+            טען עוד מאמרים
+          </button>
+        </div>
       )}
 
       {isFormOpen && (

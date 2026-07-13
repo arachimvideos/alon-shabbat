@@ -626,6 +626,12 @@ h2 {
   gap: 18px;
 }
 
+.load-more-row {
+  display: flex;
+  justify-content: center;
+  margin: 24px 0 6px;
+}
+
 .article-card,
 .empty-state,
 .article-full {

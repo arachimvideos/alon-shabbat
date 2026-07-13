@@ -3,6 +3,7 @@
 import shutil
 import tempfile
 import uuid
+import re
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
@@ -42,10 +43,6 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
-    try:
-        ensure_supabase_bucket()
-    except Exception as exc:
-        print(f"warning: Supabase storage bucket setup skipped: {exc}")
 
 
 @app.get("/api/health")
@@ -267,6 +264,11 @@ def list_articles(
     with connect() as conn:
         rows = conn.execute(sql, params).fetchall()
         articles = articles_from_rows(conn, rows)
+        for article in articles:
+            article["body_text"] = text_preview(article.get("body_text"))
+            article["extracted_text"] = text_preview(article.get("extracted_text"))
+            article["body_preview"] = article["body_text"]
+            article["extracted_preview"] = article["extracted_text"]
         return [add_match_sources(article, q) for article in articles]
 
 
@@ -465,6 +467,7 @@ def save_upload(upload: UploadFile, prefix: str) -> tuple[str, str, str, str, Pa
     extraction_path = Path(temp.name)
 
     if use_supabase_storage():
+        ensure_supabase_bucket()
         file_path = upload_supabase_object(stored_filename, data, content_type)
     else:
         destination = UPLOADS_DIR / stored_filename
@@ -486,15 +489,22 @@ def use_supabase_storage() -> bool:
     return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY and SUPABASE_BUCKET)
 
 
+_supabase_bucket_ready = False
+
+
 def ensure_supabase_bucket() -> None:
+    global _supabase_bucket_ready
     if not use_supabase_storage():
+        return
+    if _supabase_bucket_ready:
         return
     existing = requests.get(
         f"{SUPABASE_URL}/storage/v1/bucket/{SUPABASE_BUCKET}",
         headers=supabase_headers(),
-        timeout=30,
+        timeout=10,
     )
     if existing.status_code == 200:
+        _supabase_bucket_ready = True
         return
 
     url = f"{SUPABASE_URL}/storage/v1/bucket"
@@ -502,9 +512,10 @@ def ensure_supabase_bucket() -> None:
         url,
         headers={**supabase_headers("application/json")},
         json={"id": SUPABASE_BUCKET, "name": SUPABASE_BUCKET, "public": False},
-        timeout=30,
+        timeout=10,
     )
     if response.status_code in {200, 201, 409}:
+        _supabase_bucket_ready = True
         return
     detail = response.text[:300]
     raise RuntimeError(f"Supabase storage bucket setup failed: {response.status_code} {detail}")
@@ -599,10 +610,10 @@ def article_list_select_sql() -> str:
             articles.author_name,
             articles.publication_date,
             articles.uploaded_at,
-            substr(articles.body_text, 1, 900) AS body_text,
-            substr(articles.extracted_text, 1, 900) AS extracted_text,
-            substr(articles.body_text, 1, 900) AS body_preview,
-            substr(articles.extracted_text, 1, 900) AS extracted_preview,
+            substr(articles.body_text, 1, 1200) AS body_text,
+            substr(articles.extracted_text, 1, 1200) AS extracted_text,
+            substr(articles.body_text, 1, 1200) AS body_preview,
+            substr(articles.extracted_text, 1, 1200) AS extracted_preview,
             articles.status,
             articles.original_filename,
             articles.stored_filename,
@@ -616,6 +627,16 @@ def article_list_select_sql() -> str:
         FROM articles
         JOIN parashot ON parashot.id = articles.parasha_id
     """
+
+
+def text_preview(value: object, limit: int = 260) -> str:
+    if not value:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", str(value))
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
 
 
 def add_match_sources(article: dict, q: str | None) -> dict:
