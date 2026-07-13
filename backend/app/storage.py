@@ -22,7 +22,11 @@ class Database:
             import psycopg
             from psycopg.rows import dict_row
 
-            self.conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+            self.conn = psycopg.connect(
+                DATABASE_URL,
+                row_factory=dict_row,
+                prepare_threshold=None,
+            )
         else:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             UPLOADS_DIR.mkdir(parents=True, exist_ok=True)

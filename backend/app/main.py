@@ -41,7 +41,10 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
-    ensure_supabase_bucket()
+    try:
+        ensure_supabase_bucket()
+    except Exception as exc:
+        print(f"warning: Supabase storage bucket setup skipped: {exc}")
 
 
 @app.get("/api/health")
@@ -468,6 +471,14 @@ def use_supabase_storage() -> bool:
 def ensure_supabase_bucket() -> None:
     if not use_supabase_storage():
         return
+    existing = requests.get(
+        f"{SUPABASE_URL}/storage/v1/bucket/{SUPABASE_BUCKET}",
+        headers=supabase_headers(),
+        timeout=30,
+    )
+    if existing.status_code == 200:
+        return
+
     url = f"{SUPABASE_URL}/storage/v1/bucket"
     response = requests.post(
         url,
@@ -475,8 +486,10 @@ def ensure_supabase_bucket() -> None:
         json={"id": SUPABASE_BUCKET, "name": SUPABASE_BUCKET, "public": False},
         timeout=30,
     )
-    if response.status_code not in {200, 201, 409}:
-        raise RuntimeError("Supabase storage bucket setup failed")
+    if response.status_code in {200, 201, 409}:
+        return
+    detail = response.text[:300]
+    raise RuntimeError(f"Supabase storage bucket setup failed: {response.status_code} {detail}")
 
 
 def supabase_headers(content_type: str | None = None) -> dict[str, str]:

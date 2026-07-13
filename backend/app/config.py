@@ -7,6 +7,18 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parents[1]
 
 
+def env_value(name: str, default: str = "") -> str:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip()
+    if (value.startswith('"') and value.endswith('"')) or (
+        value.startswith("'") and value.endswith("'")
+    ):
+        value = value[1:-1].strip()
+    return value
+
+
 def csv_env(name: str, default: list[str]) -> list[str]:
     raw = os.getenv(name)
     if raw is None:
@@ -23,10 +35,10 @@ ALLOWED_ORIGINS = csv_env(
     "ALLOWED_ORIGINS",
     ["http://localhost:5173", "http://127.0.0.1:5173"],
 )
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = env_value("DATABASE_URL")
 DATA_DIR = path_env("DATA_DIR", BASE_DIR / "data")
 UPLOADS_DIR = path_env("UPLOADS_DIR", BASE_DIR.parent / "uploads")
 DB_PATH = path_env("DB_PATH", DATA_DIR / "articles.db")
-SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").rstrip("/")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "alon-shabbat-uploads")
+SUPABASE_URL = env_value("SUPABASE_URL").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = "".join(env_value("SUPABASE_SERVICE_ROLE_KEY").split())
+SUPABASE_BUCKET = env_value("SUPABASE_BUCKET", "alon-shabbat-uploads")
