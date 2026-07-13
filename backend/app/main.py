@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import shutil
 import tempfile
@@ -386,11 +386,15 @@ def update_article(
 def download_article_file(article_id: int) -> Response:
     with connect() as conn:
         row = conn.execute(
-            "SELECT file_path, original_filename FROM articles WHERE id = ?",
+            """
+            SELECT file_path, original_filename, stored_filename
+            FROM articles
+            WHERE id = ?
+            """,
             (article_id,),
         ).fetchone()
         if not row or not row["file_path"]:
-            raise HTTPException(status_code=404, detail="לא נמצא קובץ למאמר")
+            raise HTTPException(status_code=404, detail="File was not found for this article")
         if is_supabase_path(row["file_path"]):
             content = download_supabase_object(row["file_path"])
             return Response(
@@ -400,7 +404,14 @@ def download_article_file(article_id: int) -> Response:
             )
         path = Path(row["file_path"])
         if not path.exists():
-            raise HTTPException(status_code=404, detail="הקובץ לא נמצא בדיסק")
+            if use_supabase_storage() and row["stored_filename"]:
+                content = download_supabase_object(supabase_object_path(row["stored_filename"]))
+                return Response(
+                    content,
+                    media_type="application/octet-stream",
+                    headers={"Content-Disposition": content_disposition(row["original_filename"])},
+                )
+            raise HTTPException(status_code=404, detail="File was not found on disk")
         return FileResponse(path, filename=row["original_filename"])
 
 
@@ -409,30 +420,36 @@ def download_article_image(article_id: int) -> Response:
     with connect() as conn:
         row = conn.execute(
             """
-            SELECT image_path, image_original_filename, image_type
+            SELECT image_path, image_original_filename, image_stored_filename, image_type
             FROM articles
             WHERE id = ?
             """,
             (article_id,),
         ).fetchone()
         if not row or not row["image_path"]:
-            raise HTTPException(status_code=404, detail="לא נמצאה תמונה למאמר")
+            raise HTTPException(status_code=404, detail="Image was not found for this article")
         if is_supabase_path(row["image_path"]):
             content = download_supabase_object(row["image_path"])
             return Response(
                 content,
                 media_type=row["image_type"] or "application/octet-stream",
-                headers={"Content-Disposition": content_disposition(row["image_original_filename"])},
+                headers={"Content-Disposition": inline_content_disposition(row["image_original_filename"])},
             )
         path = Path(row["image_path"])
         if not path.exists():
-            raise HTTPException(status_code=404, detail="התמונה לא נמצאה בדיסק")
+            if use_supabase_storage() and row["image_stored_filename"]:
+                content = download_supabase_object(supabase_object_path(row["image_stored_filename"]))
+                return Response(
+                    content,
+                    media_type=row["image_type"] or "application/octet-stream",
+                    headers={"Content-Disposition": inline_content_disposition(row["image_original_filename"])},
+                )
+            raise HTTPException(status_code=404, detail="Image was not found on disk")
         return FileResponse(
             path,
             media_type=row["image_type"] or None,
             filename=row["image_original_filename"],
         )
-
 
 def save_upload(upload: UploadFile, prefix: str) -> tuple[str, str, str, str, Path]:
     original_filename = Path(upload.filename or "upload").name
@@ -513,6 +530,9 @@ def upload_supabase_object(stored_filename: str, data: bytes, content_type: str)
     return f"supabase://{SUPABASE_BUCKET}/{stored_filename}"
 
 
+def supabase_object_path(stored_filename: str) -> str:
+    return f"supabase://{SUPABASE_BUCKET}/{stored_filename}"
+
 def is_supabase_path(path: str | None) -> bool:
     return bool(path and path.startswith("supabase://"))
 
@@ -533,6 +553,10 @@ def content_disposition(filename: str | None) -> str:
     safe_name = filename or "download"
     return f"attachment; filename*=UTF-8''{quote(safe_name)}"
 
+
+def inline_content_disposition(filename: str | None) -> str:
+    safe_name = filename or "image"
+    return f"inline; filename*=UTF-8''{quote(safe_name)}"
 
 def article_select_sql() -> str:
     return """
@@ -568,3 +592,4 @@ def add_match_sources(article: dict, q: str | None) -> dict:
         sources.append("תגית")
     article["match_sources"] = sources
     return article
+
