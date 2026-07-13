@@ -24,6 +24,7 @@ from .storage import (
     insert_returning_id,
     normalize_tag_names,
     row_to_dict,
+    articles_from_rows,
     utc_now,
 )
 
@@ -258,14 +259,14 @@ def list_articles(
         "title": "articles.title",
     }[sort_by]
     order_dir = "ASC" if sort_dir == "asc" else "DESC"
-    sql = article_select_sql()
+    sql = article_list_select_sql()
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += f" ORDER BY {order_field} {order_dir}, articles.id DESC"
 
     with connect() as conn:
         rows = conn.execute(sql, params).fetchall()
-        articles = [article_from_row(conn, row) for row in rows]
+        articles = articles_from_rows(conn, rows)
         return [add_match_sources(article, q) for article in articles]
 
 
@@ -541,11 +542,21 @@ def download_supabase_object(path: str) -> bytes:
     _, rest = path.split("://", 1)
     bucket, object_name = rest.split("/", 1)
     encoded_name = quote(object_name)
-    url = f"{SUPABASE_URL}/storage/v1/object/authenticated/{bucket}/{encoded_name}"
-    response = requests.get(url, headers=supabase_headers(), timeout=30)
-    if response.status_code == 404:
-        legacy_url = f"{SUPABASE_URL}/storage/v1/object/{bucket}/{encoded_name}"
-        response = requests.get(legacy_url, headers=supabase_headers(), timeout=30)
+    urls = [
+        f"{SUPABASE_URL}/storage/v1/object/{bucket}/{encoded_name}",
+        f"{SUPABASE_URL}/storage/v1/object/authenticated/{bucket}/{encoded_name}",
+        f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{encoded_name}",
+    ]
+    response = None
+    for url in urls:
+        response = requests.get(url, headers=supabase_headers(), timeout=30)
+        if response.status_code < 400:
+            break
+        if response.status_code != 404:
+            detail = response.text[:300] if response.text else response.reason
+            print(f"warning: Supabase storage download attempt failed: {response.status_code} {detail}")
+    if response is None:
+        raise HTTPException(status_code=502, detail="Supabase storage download failed")
     if response.status_code == 404:
         raise HTTPException(status_code=404, detail="הקובץ לא נמצא באחסון")
     if response.status_code >= 400:
@@ -577,6 +588,36 @@ def article_select_sql() -> str:
     """
 
 
+def article_list_select_sql() -> str:
+    return """
+        SELECT
+            articles.id,
+            articles.title,
+            articles.subtitle,
+            articles.issue_number,
+            articles.parasha_id,
+            articles.author_name,
+            articles.publication_date,
+            articles.uploaded_at,
+            substr(articles.body_text, 1, 900) AS body_text,
+            substr(articles.extracted_text, 1, 900) AS extracted_text,
+            substr(articles.body_text, 1, 900) AS body_preview,
+            substr(articles.extracted_text, 1, 900) AS extracted_preview,
+            articles.status,
+            articles.original_filename,
+            articles.stored_filename,
+            articles.file_path,
+            articles.file_type,
+            articles.image_original_filename,
+            articles.image_stored_filename,
+            articles.image_path,
+            articles.image_type,
+            parashot.name AS parasha_name
+        FROM articles
+        JOIN parashot ON parashot.id = articles.parasha_id
+    """
+
+
 def add_match_sources(article: dict, q: str | None) -> dict:
     if not q:
         article["match_sources"] = []
@@ -591,8 +632,8 @@ def add_match_sources(article: dict, q: str | None) -> dict:
         ("פרשה", article.get("parasha_name")),
         ("מחבר", article.get("author_name")),
         ("שם קובץ", article.get("original_filename")),
-        ("גוף המאמר", article.get("body_text")),
-        ("טקסט שחולץ", article.get("extracted_text")),
+        ("גוף המאמר", article.get("body_preview") or article.get("body_text")),
+        ("טקסט שחולץ", article.get("extracted_preview") or article.get("extracted_text")),
     ]
     for label, value in checks:
         if value and term in str(value).casefold():

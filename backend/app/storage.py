@@ -117,6 +117,11 @@ def schema_sql() -> str:
             tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
             PRIMARY KEY (article_id, tag_id)
         );
+
+        CREATE INDEX IF NOT EXISTS idx_articles_parasha_id ON articles(parasha_id);
+        CREATE INDEX IF NOT EXISTS idx_articles_publication_date ON articles(publication_date);
+        CREATE INDEX IF NOT EXISTS idx_articles_uploaded_at ON articles(uploaded_at);
+        CREATE INDEX IF NOT EXISTS idx_article_tags_tag_id ON article_tags(tag_id);
     """
 
 
@@ -227,10 +232,42 @@ def load_article_tags(conn: Database, article_id: int) -> list[dict[str, Any]]:
     return [row_to_dict(row) for row in rows]
 
 
+def load_tags_for_articles(conn: Database, article_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    if not article_ids:
+        return {}
+
+    placeholders = ",".join("?" for _ in article_ids)
+    rows = conn.execute(
+        f"""
+        SELECT article_tags.article_id, tags.id, tags.name
+        FROM article_tags
+        JOIN tags ON article_tags.tag_id = tags.id
+        WHERE article_tags.article_id IN ({placeholders})
+        ORDER BY tags.name
+        """,
+        article_ids,
+    ).fetchall()
+
+    tags_by_article: dict[int, list[dict[str, Any]]] = {article_id: [] for article_id in article_ids}
+    for row in rows:
+        item = row_to_dict(row)
+        article_id = int(item.pop("article_id"))
+        tags_by_article.setdefault(article_id, []).append(item)
+    return tags_by_article
+
+
 def article_from_row(conn: Database, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     article = row_to_dict(row)
     article["tags"] = load_article_tags(conn, int(article["id"]))
     return article
+
+
+def articles_from_rows(conn: Database, rows: Iterable[sqlite3.Row | dict[str, Any]]) -> list[dict[str, Any]]:
+    articles = [row_to_dict(row) for row in rows]
+    tags_by_article = load_tags_for_articles(conn, [int(article["id"]) for article in articles])
+    for article in articles:
+        article["tags"] = tags_by_article.get(int(article["id"]), [])
+    return articles
 
 
 def insert_returning_id(conn: Database, sql: str, params: Iterable[Any]) -> int:
