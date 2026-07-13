@@ -23,6 +23,10 @@ ALLOWED_ORIGINS = csv_env(
     "ALLOWED_ORIGINS",
     ["http://localhost:5173", "http://127.0.0.1:5173"],
 )
+DATABASE_URL = os.getenv("DATABASE_URL")
 DATA_DIR = path_env("DATA_DIR", BASE_DIR / "data")
 UPLOADS_DIR = path_env("UPLOADS_DIR", BASE_DIR.parent / "uploads")
 DB_PATH = path_env("DB_PATH", DATA_DIR / "articles.db")
+SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "alon-shabbat-uploads")

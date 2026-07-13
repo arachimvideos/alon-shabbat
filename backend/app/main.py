@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+import requests
 
-from .config import ALLOWED_ORIGINS
+from .config import ALLOWED_ORIGINS, SUPABASE_BUCKET, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL
 from .extractors import extract_text
 from .storage import (
     UPLOADS_DIR,
@@ -18,6 +21,7 @@ from .storage import (
     connect,
     get_or_create_tags,
     init_db,
+    insert_returning_id,
     normalize_tag_names,
     row_to_dict,
     utc_now,
@@ -37,6 +41,7 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
+    ensure_supabase_bucket()
 
 
 @app.get("/api/health")
@@ -58,13 +63,14 @@ def create_parasha(name: str = Form(...)) -> dict:
         raise HTTPException(status_code=422, detail="שם פרשה הוא שדה חובה")
     with connect() as conn:
         try:
-            cursor = conn.execute(
+            parasha_id = insert_returning_id(
+                conn,
                 "INSERT INTO parashot (name, created_at) VALUES (?, ?)",
                 (clean_name, utc_now()),
             )
         except Exception as exc:
             raise HTTPException(status_code=409, detail="הפרשה כבר קיימת") from exc
-        row = conn.execute("SELECT * FROM parashot WHERE id = ?", (cursor.lastrowid,)).fetchone()
+        row = conn.execute("SELECT * FROM parashot WHERE id = ?", (parasha_id,)).fetchone()
         return row_to_dict(row)
 
 
@@ -82,13 +88,14 @@ def create_tag(name: str = Form(...)) -> dict:
         raise HTTPException(status_code=422, detail="שם תגית הוא שדה חובה")
     with connect() as conn:
         try:
-            cursor = conn.execute(
+            tag_id = insert_returning_id(
+                conn,
                 "INSERT INTO tags (name, created_at) VALUES (?, ?)",
                 (clean_name, utc_now()),
             )
         except Exception as exc:
             raise HTTPException(status_code=409, detail="התגית כבר קיימת") from exc
-        row = conn.execute("SELECT * FROM tags WHERE id = ?", (cursor.lastrowid,)).fetchone()
+        row = conn.execute("SELECT * FROM tags WHERE id = ?", (tag_id,)).fetchone()
         return row_to_dict(row)
 
 
@@ -119,8 +126,8 @@ def create_article(
     extracted = ""
 
     if file and file.filename:
-      original_filename, stored_filename, file_path, file_type = save_upload(file, "article")
-      extracted = extract_text(Path(file_path))
+      original_filename, stored_filename, file_path, file_type, extraction_path = save_upload(file, "article")
+      extracted = extract_text(extraction_path)
 
     image_original_filename = None
     image_stored_filename = None
@@ -130,7 +137,7 @@ def create_article(
     if image and image.filename:
         if image.content_type and not image.content_type.startswith("image/"):
             raise HTTPException(status_code=422, detail="קובץ התמונה חייב להיות בפורמט תמונה")
-        image_original_filename, image_stored_filename, image_path, image_type = save_upload(
+        image_original_filename, image_stored_filename, image_path, image_type, _ = save_upload(
             image,
             "image",
         )
@@ -140,7 +147,8 @@ def create_article(
         if not parasha:
             raise HTTPException(status_code=422, detail="הפרשה שנבחרה אינה קיימת")
 
-        cursor = conn.execute(
+        article_id = insert_returning_id(
+            conn,
             """
             INSERT INTO articles (
                 title, subtitle, issue_number, parasha_id, author_name, publication_date, uploaded_at,
@@ -170,7 +178,6 @@ def create_article(
                 image_type,
             ),
         )
-        article_id = int(cursor.lastrowid)
         tag_ids = get_or_create_tags(conn, normalize_tag_names(tags))
         attach_tags(conn, article_id, tag_ids)
         row = conn.execute(article_select_sql() + " WHERE articles.id = ?", (article_id,)).fetchone()
@@ -222,10 +229,10 @@ def list_articles(
         where.append("articles.publication_date <= ?")
         params.append(publication_to)
     if uploaded_from:
-        where.append("date(articles.uploaded_at) >= ?")
+        where.append("substr(articles.uploaded_at, 1, 10) >= ?")
         params.append(uploaded_from)
     if uploaded_to:
-        where.append("date(articles.uploaded_at) <= ?")
+        where.append("substr(articles.uploaded_at, 1, 10) <= ?")
         params.append(uploaded_to)
     if tags:
         placeholders = ",".join("?" for _ in tags)
@@ -295,8 +302,8 @@ def update_article(
     extracted = None
 
     if file and file.filename:
-        original_filename, stored_filename, file_path, file_type = save_upload(file, "article")
-        extracted = extract_text(Path(file_path)) or None
+        original_filename, stored_filename, file_path, file_type, extraction_path = save_upload(file, "article")
+        extracted = extract_text(extraction_path) or None
 
     image_original_filename = None
     image_stored_filename = None
@@ -306,7 +313,7 @@ def update_article(
     if image and image.filename:
         if image.content_type and not image.content_type.startswith("image/"):
             raise HTTPException(status_code=422, detail="קובץ התמונה חייב להיות בפורמט תמונה")
-        image_original_filename, image_stored_filename, image_path, image_type = save_upload(
+        image_original_filename, image_stored_filename, image_path, image_type, _ = save_upload(
             image,
             "image",
         )
@@ -373,7 +380,7 @@ def update_article(
 
 
 @app.get("/api/articles/{article_id}/file")
-def download_article_file(article_id: int) -> FileResponse:
+def download_article_file(article_id: int) -> Response:
     with connect() as conn:
         row = conn.execute(
             "SELECT file_path, original_filename FROM articles WHERE id = ?",
@@ -381,6 +388,13 @@ def download_article_file(article_id: int) -> FileResponse:
         ).fetchone()
         if not row or not row["file_path"]:
             raise HTTPException(status_code=404, detail="לא נמצא קובץ למאמר")
+        if is_supabase_path(row["file_path"]):
+            content = download_supabase_object(row["file_path"])
+            return Response(
+                content,
+                media_type="application/octet-stream",
+                headers={"Content-Disposition": content_disposition(row["original_filename"])},
+            )
         path = Path(row["file_path"])
         if not path.exists():
             raise HTTPException(status_code=404, detail="הקובץ לא נמצא בדיסק")
@@ -388,7 +402,7 @@ def download_article_file(article_id: int) -> FileResponse:
 
 
 @app.get("/api/articles/{article_id}/image")
-def download_article_image(article_id: int) -> FileResponse:
+def download_article_image(article_id: int) -> Response:
     with connect() as conn:
         row = conn.execute(
             """
@@ -400,6 +414,13 @@ def download_article_image(article_id: int) -> FileResponse:
         ).fetchone()
         if not row or not row["image_path"]:
             raise HTTPException(status_code=404, detail="לא נמצאה תמונה למאמר")
+        if is_supabase_path(row["image_path"]):
+            content = download_supabase_object(row["image_path"])
+            return Response(
+                content,
+                media_type=row["image_type"] or "application/octet-stream",
+                headers={"Content-Disposition": content_disposition(row["image_original_filename"])},
+            )
         path = Path(row["image_path"])
         if not path.exists():
             raise HTTPException(status_code=404, detail="התמונה לא נמצאה בדיסק")
@@ -410,19 +431,94 @@ def download_article_image(article_id: int) -> FileResponse:
         )
 
 
-def save_upload(upload: UploadFile, prefix: str) -> tuple[str, str, str, str]:
+def save_upload(upload: UploadFile, prefix: str) -> tuple[str, str, str, str, Path]:
     original_filename = Path(upload.filename or "upload").name
     suffix = Path(original_filename).suffix
     stored_filename = f"{prefix}-{uuid.uuid4().hex}{suffix}"
-    destination = UPLOADS_DIR / stored_filename
-    with destination.open("wb") as buffer:
-        shutil.copyfileobj(upload.file, buffer)
+    content_type = upload.content_type or "application/octet-stream"
+    data = upload.file.read()
+
+    temp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    temp.write(data)
+    temp.close()
+    extraction_path = Path(temp.name)
+
+    if use_supabase_storage():
+        file_path = upload_supabase_object(stored_filename, data, content_type)
+    else:
+        destination = UPLOADS_DIR / stored_filename
+        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        with destination.open("wb") as buffer:
+            buffer.write(data)
+        file_path = str(destination)
+
     return (
         original_filename,
         stored_filename,
-        str(destination),
-        upload.content_type or "application/octet-stream",
+        file_path,
+        content_type,
+        extraction_path,
     )
+
+
+def use_supabase_storage() -> bool:
+    return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY and SUPABASE_BUCKET)
+
+
+def ensure_supabase_bucket() -> None:
+    if not use_supabase_storage():
+        return
+    url = f"{SUPABASE_URL}/storage/v1/bucket"
+    response = requests.post(
+        url,
+        headers={**supabase_headers("application/json")},
+        json={"id": SUPABASE_BUCKET, "name": SUPABASE_BUCKET, "public": False},
+        timeout=30,
+    )
+    if response.status_code not in {200, 201, 409}:
+        raise RuntimeError("Supabase storage bucket setup failed")
+
+
+def supabase_headers(content_type: str | None = None) -> dict[str, str]:
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY or "",
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+    }
+    if content_type:
+        headers["Content-Type"] = content_type
+    return headers
+
+
+def upload_supabase_object(stored_filename: str, data: bytes, content_type: str) -> str:
+    encoded_name = quote(stored_filename)
+    url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{encoded_name}"
+    response = requests.post(url, headers=supabase_headers(content_type), data=data, timeout=30)
+    if response.status_code == 409:
+        response = requests.put(url, headers=supabase_headers(content_type), data=data, timeout=30)
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail="Supabase storage upload failed")
+    return f"supabase://{SUPABASE_BUCKET}/{stored_filename}"
+
+
+def is_supabase_path(path: str | None) -> bool:
+    return bool(path and path.startswith("supabase://"))
+
+
+def download_supabase_object(path: str) -> bytes:
+    _, rest = path.split("://", 1)
+    bucket, object_name = rest.split("/", 1)
+    url = f"{SUPABASE_URL}/storage/v1/object/{bucket}/{quote(object_name)}"
+    response = requests.get(url, headers=supabase_headers(), timeout=30)
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="הקובץ לא נמצא באחסון")
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail="Supabase storage download failed")
+    return response.content
+
+
+def content_disposition(filename: str | None) -> str:
+    safe_name = filename or "download"
+    return f"attachment; filename*=UTF-8''{quote(safe_name)}"
 
 
 def article_select_sql() -> str:

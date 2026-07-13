@@ -1,49 +1,56 @@
-# פריסה לסביבת הדגמה
+# פריסה חינמית עם אחסון קבוע
 
-המערכת מחולקת לשני שירותים:
+הפריסה מיועדת ל-Render Free עבור השרת והאתר, ול-Supabase Free עבור הנתונים והקבצים.
 
-- `backend` - שרת FastAPI, בסיס נתונים SQLite וקבצי העלאות.
-- `frontend` - ממשק React שנבנה לאתר סטטי.
+## Supabase
 
-## הגדרות נדרשות
+1. יוצרים פרויקט חינמי ב-Supabase.
+2. מעתיקים את כתובת הפרויקט:
+   `Project Settings -> API -> Project URL`
+3. מעתיקים `service_role` key:
+   `Project Settings -> API -> Project API keys`
+4. מעתיקים את כתובת החיבור ל-Postgres:
+   `Project Settings -> Database -> Connection string`
 
-בשרת ה-API:
-
-```text
-ALLOWED_ORIGINS=https://your-demo-site.example.com
-DATA_DIR=/data
-UPLOADS_DIR=/data/uploads
-DB_PATH=/data/articles.db
-```
-
-באתר:
-
-```text
-VITE_API_BASE=https://your-api-service.example.com
-```
-
-ב-Docker של האתר ההגדרה הזו נטענת בזמן הרצה, כך שאפשר לשנות אותה גם אחרי בנייה מחדש של השירות.
+מומלץ להשתמש ב-connection string של pooler אם Supabase מציג אפשרות כזו.
 
 ## Render
 
-קובץ `render.yaml` מגדיר שני שירותים:
+הקובץ `render.yaml` מגדיר שני שירותים בתוכנית Free:
 
 - `aloney-shabbat-api`
 - `aloney-shabbat-web`
 
-אחרי יצירת השירותים, מעדכנים:
+בזמן יצירת ה-Blueprint, ממלאים ב-Render את המשתנים הבאים עבור `aloney-shabbat-api`:
 
-1. ב-`aloney-shabbat-web`: את `VITE_API_BASE` לכתובת ה-API.
-2. ב-`aloney-shabbat-api`: את `ALLOWED_ORIGINS` לכתובת האתר.
+```text
+ALLOWED_ORIGINS=https://your-web-service.onrender.com
+DATABASE_URL=postgresql://...
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=...
+SUPABASE_BUCKET=alon-shabbat-uploads
+```
 
-לשרת ה-API מוגדר דיסק קבוע ב-`/data`, כדי שבסיס הנתונים והקבצים לא יימחקו בין הפעלות.
+עבור `aloney-shabbat-web` ממלאים:
+
+```text
+VITE_API_BASE=https://your-api-service.onrender.com
+```
+
+השרת יוצר את טבלאות ה-Postgres ואת ה-bucket ב-Supabase בעלייה הראשונה.
+
+## מגבלות החינם
+
+- Render Free יכול להירדם אחרי חוסר שימוש, ואז הבקשה הראשונה תהיה איטית.
+- Supabase Free נשמר קבוע, אבל פרויקט חינמי עשוי להיות מושהה אחרי שבוע ללא פעילות.
+- מגבלות Supabase Free בזמן כתיבת המסמך: 500MB למסד הנתונים ו-1GB לאחסון קבצים.
 
 ## בדיקה אחרי פריסה
 
 פותחים:
 
 ```text
-https://your-api-service.example.com/api/health
+https://your-api-service.onrender.com/api/health
 ```
 
 אם מתקבל:
