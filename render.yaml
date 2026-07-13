@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: aloney-shabbat-api
+    runtime: docker
+    rootDir: backend
+    disk:
+      name: aloney-shabbat-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: DATA_DIR
+        value: /data
+      - key: UPLOADS_DIR
+        value: /data/uploads
+      - key: DB_PATH
+        value: /data/articles.db
+
+  - type: web
+    name: aloney-shabbat-web
+    runtime: docker
+    rootDir: frontend
+    envVars:
+      - key: VITE_API_BASE
+        sync: false

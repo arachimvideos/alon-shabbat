@@ -1,0 +1,17 @@
+.pnpm-store/
+backend/.venv/
+backend/data/
+backend/server.log
+frontend/node_modules/
+frontend/dist/
+uploads/
+__pycache__/
+*.pyc
+.git-empty-backup/
+.git-upload/
+alon-shabbat/
+alonim/
+.tmp_pdf_colors/
+image-import-staging/
+~$*.docx
+*.log
