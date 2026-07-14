@@ -148,6 +148,7 @@ function App() {
           <ArticleForm
             article={editingArticle}
             parashot={parashot}
+            allTags={tags}
             onClose={() => {
               setIsFormOpen(false);
               setEditingArticle(null);
@@ -358,6 +359,7 @@ function App() {
         <ArticleForm
           article={editingArticle}
           parashot={parashot}
+          allTags={tags}
           onClose={() => {
             setIsFormOpen(false);
             setEditingArticle(null);
@@ -604,10 +606,9 @@ function ArticlePage({ article, onBack, onEdit, message, onDismissMessage }) {
   );
 }
 
-function ArticleForm({ article, parashot, onClose, onSaved, onError }) {
+function ArticleForm({ article, parashot, allTags = [], onClose, onSaved, onError }) {
   const [isSaving, setIsSaving] = useState(false);
   const isEdit = Boolean(article);
-  const tagNames = article?.tags?.map((tag) => tag.name).join(", ") || "";
 
   async function submit(event) {
     event.preventDefault();
@@ -664,7 +665,7 @@ function ArticleForm({ article, parashot, onClose, onSaved, onError }) {
           <input name="publication_date" type="date" defaultValue={article?.publication_date || ""} />
         </Field>
         <Field label="תגיות">
-          <input name="tags" placeholder="מופרדות בפסיקים" defaultValue={tagNames} />
+          <TagSelector articleTags={article?.tags || []} allTags={allTags} />
         </Field>
         <Field label="תמונת מאמר">
           <input name="image" type="file" accept="image/*" />
@@ -693,6 +694,103 @@ function ArticleForm({ article, parashot, onClose, onSaved, onError }) {
       </form>
     </div>
   );
+}
+
+function TagSelector({ articleTags, allTags }) {
+  const articleTagKey = articleTags.map((tag) => tag.name).join("\u0000");
+  const [selectedNames, setSelectedNames] = useState(() => articleTags.map((tag) => tag.name));
+  const [newTags, setNewTags] = useState("");
+
+  useEffect(() => {
+    setSelectedNames(articleTags.map((tag) => tag.name));
+    setNewTags("");
+  }, [articleTagKey]);
+
+  const payloadTags = useMemo(() => {
+    return uniqueTagNames([...selectedNames, ...splitTagNames(newTags)]);
+  }, [newTags, selectedNames]);
+
+  function toggleTag(name) {
+    setSelectedNames((current) => {
+      const exists = current.some((tagName) => sameTagName(tagName, name));
+      return exists
+        ? current.filter((tagName) => !sameTagName(tagName, name))
+        : [...current, name];
+    });
+  }
+
+  function removeSelected(name) {
+    setSelectedNames((current) => current.filter((tagName) => !sameTagName(tagName, name)));
+  }
+
+  return (
+    <div className="tag-selector">
+      <input type="hidden" name="tags" value={payloadTags.join(", ")} readOnly />
+      <div className="tag-selector-list" aria-label="בחירת תגיות קיימות">
+        {allTags.length === 0 && <span className="muted">אין תגיות קיימות עדיין</span>}
+        {allTags.map((tag) => {
+          const isSelected = selectedNames.some((name) => sameTagName(name, tag.name));
+          return (
+            <button
+              key={tag.id}
+              type="button"
+              className={isSelected ? "tag active" : "tag"}
+              onClick={() => toggleTag(tag.name)}
+            >
+              {tag.name}
+            </button>
+          );
+        })}
+      </div>
+      <input
+        value={newTags}
+        onChange={(event) => setNewTags(event.target.value)}
+        placeholder="הוספת תגיות חדשות, מופרדות בפסיקים"
+      />
+      {payloadTags.length > 0 && (
+        <div className="tag-selector-selected" aria-label="תגיות שישמרו">
+          {payloadTags.map((name) => (
+            <span key={name} className="selected-tag-pill">
+              {name}
+              {selectedNames.some((selectedName) => sameTagName(selectedName, name)) && (
+                <button type="button" aria-label={`הסרת התגית ${name}`} onClick={() => removeSelected(name)}>
+                  <X size={14} />
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function splitTagNames(value = "") {
+  return value
+    .split(/[,;\n]+/)
+    .map((name) => name.trim())
+    .filter(Boolean);
+}
+
+function uniqueTagNames(names) {
+  const seen = new Set();
+  const unique = [];
+  names.forEach((name) => {
+    const key = normalizeTagNameKey(name);
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(name);
+    }
+  });
+  return unique;
+}
+
+function sameTagName(first, second) {
+  return normalizeTagNameKey(first) === normalizeTagNameKey(second);
+}
+
+function normalizeTagNameKey(name) {
+  return name.trim().toLocaleLowerCase();
 }
 
 const paragraphFormats = [
