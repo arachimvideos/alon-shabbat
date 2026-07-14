@@ -990,11 +990,25 @@ function plainText(value = "") {
     return "";
   }
   if (!hasHtml(value)) {
-    return value;
+    return decodeHtmlEntities(value);
   }
   const element = document.createElement("div");
   element.innerHTML = sanitizeRichText(value);
-  return element.textContent || "";
+  return decodeHtmlEntities(element.textContent || "");
+}
+
+function decodeHtmlEntities(value = "") {
+  const textarea = document.createElement("textarea");
+  let decoded = value;
+  for (let index = 0; index < 2; index += 1) {
+    textarea.innerHTML = decoded;
+    const next = textarea.value;
+    if (next === decoded) {
+      break;
+    }
+    decoded = next;
+  }
+  return decoded;
 }
 
 function sanitizeRichText(html = "") {

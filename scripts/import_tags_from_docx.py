@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
+from typing import Any
 
 from docx import Document
 
@@ -58,6 +60,13 @@ class TagRow:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def clean_env_value(name: str) -> str:
+    value = (os.getenv(name) or "").strip()
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        value = value[1:-1].strip()
+    return value
 
 
 def clean_text(value: str | None) -> str:
@@ -178,34 +187,83 @@ def article_sort_key(row: TagRow, article: sqlite3.Row) -> tuple[float, int, flo
     return (article_score(row, article), exact_subtitle, combined_ratio)
 
 
-def get_or_create_tag(conn: sqlite3.Connection, name: str) -> int:
-    conn.execute(
-        "INSERT OR IGNORE INTO tags (name, created_at) VALUES (?, ?)",
-        (name, utc_now()),
-    )
-    row = conn.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()
+def sql_for_backend(sql: str, use_supabase: bool) -> str:
+    if not use_supabase:
+        return sql
+    return sql.replace("?", "%s")
+
+
+def execute(conn: Any, sql: str, params: tuple[Any, ...] = (), use_supabase: bool = False):
+    return conn.execute(sql_for_backend(sql, use_supabase), params)
+
+
+def first_value(row: Any) -> Any:
+    if isinstance(row, dict):
+        return next(iter(row.values()))
+    return row[0]
+
+
+def get_or_create_tag(conn: Any, name: str, use_supabase: bool) -> int:
+    if use_supabase:
+        execute(
+            conn,
+            "INSERT INTO public.tags (name, created_at) VALUES (?, ?) ON CONFLICT (name) DO NOTHING",
+            (name, utc_now()),
+            use_supabase,
+        )
+    else:
+        execute(
+            conn,
+            "INSERT OR IGNORE INTO tags (name, created_at) VALUES (?, ?)",
+            (name, utc_now()),
+            use_supabase,
+        )
+    row = execute(conn, "SELECT id FROM tags WHERE name = ?", (name,), use_supabase).fetchone()
     if row is None:
         raise RuntimeError(f"Could not create tag: {name}")
     return int(row["id"])
 
 
-def import_tags(rows: list[TagRow], clear_existing: bool = True) -> tuple[int, int, list[str]]:
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        articles = conn.execute(
+def connect_database(use_supabase: bool) -> Any:
+    if use_supabase:
+        database_url = clean_env_value("DATABASE_URL")
+        if not database_url:
+            raise RuntimeError("DATABASE_URL is required when using --supabase")
+        import psycopg
+        from psycopg.rows import dict_row
+
+        return psycopg.connect(database_url, row_factory=dict_row, prepare_threshold=None)
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def import_tags(
+    rows: list[TagRow],
+    clear_existing: bool = True,
+    use_supabase: bool = False,
+) -> tuple[int, int, list[str]]:
+    with connect_database(use_supabase) as conn:
+        articles = execute(
+            conn,
             """
             SELECT articles.id, articles.title, articles.subtitle, articles.issue_number,
                    parashot.name AS parasha_name
             FROM articles
             JOIN parashot ON parashot.id = articles.parasha_id
-            """
+            """,
+            use_supabase=use_supabase,
         ).fetchall()
 
         if clear_existing:
-            conn.execute("DELETE FROM article_tags")
-            conn.execute("DELETE FROM tags")
-            conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('tags')")
+            if use_supabase:
+                execute(conn, "TRUNCATE public.article_tags, public.tags RESTART IDENTITY CASCADE", use_supabase=True)
+            else:
+                execute(conn, "DELETE FROM article_tags")
+                execute(conn, "DELETE FROM tags")
+                execute(conn, "DELETE FROM sqlite_sequence WHERE name IN ('tags')")
 
         matched_articles: set[int] = set()
         warnings: list[str] = []
@@ -234,10 +292,16 @@ def import_tags(rows: list[TagRow], clear_existing: bool = True) -> tuple[int, i
             for article in same_article_matches:
                 matched_articles.add(int(article["id"]))
                 for tag in row.tags:
-                    tag_id = get_or_create_tag(conn, tag)
-                    conn.execute(
-                        "INSERT OR IGNORE INTO article_tags (article_id, tag_id) VALUES (?, ?)",
+                    tag_id = get_or_create_tag(conn, tag, use_supabase)
+                    execute(
+                        conn,
+                        (
+                            "INSERT INTO public.article_tags (article_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING"
+                            if use_supabase
+                            else "INSERT OR IGNORE INTO article_tags (article_id, tag_id) VALUES (?, ?)"
+                        ),
                         (article["id"], tag_id),
+                        use_supabase,
                     )
 
             if best_score < 0.9:
@@ -245,7 +309,9 @@ def import_tags(rows: list[TagRow], clear_existing: bool = True) -> tuple[int, i
                     f"Low confidence {best_score:.2f}: {row.parasha} | {row.title_text}"
                 )
 
-        linked_count = conn.execute("SELECT COUNT(*) FROM article_tags").fetchone()[0]
+        linked_count = first_value(
+            execute(conn, "SELECT COUNT(*) FROM article_tags", use_supabase=use_supabase).fetchone()
+        )
         return len(matched_articles), int(linked_count), warnings
 
 
@@ -254,7 +320,11 @@ def main() -> None:
     parser.add_argument("docx", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--keep-existing", action="store_true")
+    parser.add_argument("--supabase", action="store_true", help="Import directly into Supabase/Postgres using DATABASE_URL")
     args = parser.parse_args()
+
+    if args.supabase and not clean_env_value("DATABASE_URL"):
+        parser.error("DATABASE_URL is required when using --supabase")
 
     rows = parse_docx(args.docx)
     if args.dry_run:
@@ -266,6 +336,7 @@ def main() -> None:
     matched_articles, linked_count, warnings = import_tags(
         rows,
         clear_existing=not args.keep_existing,
+        use_supabase=args.supabase,
     )
     print(f"parsed_rows={len(rows)} matched_articles={matched_articles} linked_tags={linked_count}")
     for warning in warnings[:20]:

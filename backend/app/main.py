@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import uuid
 import re
+import html
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
@@ -633,6 +634,11 @@ def text_preview(value: object, limit: int = 260) -> str:
     if not value:
         return ""
     text = re.sub(r"<[^>]+>", " ", str(value))
+    for _ in range(2):
+        decoded = html.unescape(text)
+        if decoded == text:
+            break
+        text = decoded
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) <= limit:
         return text
