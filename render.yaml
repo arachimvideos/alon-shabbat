@@ -15,6 +15,10 @@ services:
         sync: false
       - key: SUPABASE_BUCKET
         value: alon-shabbat-uploads
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_TOKEN_SECRET
+        sync: false
 
   - type: web
     name: aloney-shabbat-web

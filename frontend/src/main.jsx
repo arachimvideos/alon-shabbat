@@ -15,20 +15,26 @@ import {
   LayoutGrid,
   List,
   ListOrdered,
+  LogIn,
+  LogOut,
   Plus,
+  Printer,
   Search,
   SlidersHorizontal,
   Underline,
   X,
 } from "lucide-react";
 import {
+  articlePdfUrl,
+  checkAdminSession,
   createArticle,
-  fileUrl,
   getArticle,
+  getAuthStatus,
   imageUrl,
   listArticles,
   listParashot,
   listTags,
+  loginAdmin,
   updateArticle,
 } from "./api";
 import "./styles.css";
@@ -60,6 +66,9 @@ function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [visibleCount, setVisibleCount] = useState(initialVisibleCount);
   const [message, setMessage] = useState("");
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [isLoginOpen, setIsLoginOpen] = useState(false);
+  const [isAdminConfigured, setIsAdminConfigured] = useState(true);
 
   useEffect(() => {
     Promise.all([listParashot(), listTags()])
@@ -68,6 +77,20 @@ function App() {
         setTags(tagData);
       })
       .catch((error) => setMessage(error.message));
+  }, []);
+
+  useEffect(() => {
+    getAuthStatus()
+      .then((status) => setIsAdminConfigured(status.admin_configured))
+      .catch(() => setIsAdminConfigured(false));
+    if (localStorage.getItem("adminToken")) {
+      checkAdminSession()
+        .then(() => setIsAdmin(true))
+        .catch(() => {
+          localStorage.removeItem("adminToken");
+          setIsAdmin(false);
+        });
+    }
   }, []);
 
   useEffect(() => {
@@ -125,13 +148,37 @@ function App() {
   }
 
   function openCreateForm() {
+    if (!isAdmin) {
+      setIsLoginOpen(true);
+      return;
+    }
     setEditingArticle(null);
     setIsFormOpen(true);
   }
 
   function openEditForm(article) {
+    if (!isAdmin) {
+      setIsLoginOpen(true);
+      return;
+    }
     setEditingArticle(article);
     setIsFormOpen(true);
+  }
+
+  async function handleAdminLogin(password) {
+    const session = await loginAdmin(password);
+    localStorage.setItem("adminToken", session.token);
+    setIsAdmin(true);
+    setIsLoginOpen(false);
+    setMessage("נכנסת כאדמין. אפשר לערוך ולהוסיף מאמרים.");
+  }
+
+  function logoutAdmin() {
+    localStorage.removeItem("adminToken");
+    setIsAdmin(false);
+    setIsFormOpen(false);
+    setEditingArticle(null);
+    setMessage("יצאת ממצב אדמין.");
   }
 
   if (selectedArticle) {
@@ -141,6 +188,7 @@ function App() {
           article={selectedArticle}
           onBack={() => setSelectedArticle(null)}
           onEdit={() => openEditForm(selectedArticle)}
+          isAdmin={isAdmin}
           message={message}
           onDismissMessage={() => setMessage("")}
         />
@@ -154,6 +202,14 @@ function App() {
               setEditingArticle(null);
             }}
             onSaved={handleSaved}
+            onError={(error) => setMessage(error.message)}
+          />
+        )}
+        {isLoginOpen && (
+          <AdminLoginModal
+            isConfigured={isAdminConfigured}
+            onClose={() => setIsLoginOpen(false)}
+            onLogin={handleAdminLogin}
             onError={(error) => setMessage(error.message)}
           />
         )}
@@ -173,10 +229,25 @@ function App() {
           <a href="#search">חיפוש</a>
           <a href="#tags">תגיות</a>
         </nav>
-        <button className="primary-button" onClick={openCreateForm}>
-          <Plus size={18} />
-          הוספת מאמר
-        </button>
+        <div className="admin-actions">
+          {isAdmin ? (
+            <>
+              <button className="primary-button" onClick={openCreateForm}>
+                <Plus size={18} />
+                הוספת מאמר
+              </button>
+              <button className="ghost-button" onClick={logoutAdmin}>
+                <LogOut size={18} />
+                יציאה
+              </button>
+            </>
+          ) : (
+            <button className="ghost-button" onClick={() => setIsLoginOpen(true)}>
+              <LogIn size={18} />
+              כניסת אדמין
+            </button>
+          )}
+        </div>
       </header>
 
       <Notice message={message} onDismiss={() => setMessage("")} />
@@ -191,10 +262,12 @@ function App() {
             מאת <strong className="hero-author">הרב דניאל נשיא</strong>
           </p>
           <div className="hero-actions">
-            <button className="primary-button" onClick={openCreateForm}>
-              <Plus size={18} />
-              מאמר חדש
-            </button>
+            {isAdmin && (
+              <button className="primary-button" onClick={openCreateForm}>
+                <Plus size={18} />
+                מאמר חדש
+              </button>
+            )}
             <a className="ghost-link" href="#search">
               לחיפוש מתקדם
               <ArrowLeft size={18} />
@@ -365,6 +438,14 @@ function App() {
             setEditingArticle(null);
           }}
           onSaved={handleSaved}
+          onError={(error) => setMessage(error.message)}
+        />
+      )}
+      {isLoginOpen && (
+        <AdminLoginModal
+          isConfigured={isAdminConfigured}
+          onClose={() => setIsLoginOpen(false)}
+          onLogin={handleAdminLogin}
           onError={(error) => setMessage(error.message)}
         />
       )}
@@ -556,7 +637,7 @@ function EmptyState() {
   );
 }
 
-function ArticlePage({ article, onBack, onEdit, message, onDismissMessage }) {
+function ArticlePage({ article, onBack, onEdit, isAdmin, message, onDismissMessage }) {
   return (
     <main className="app-shell article-page">
       <div className="article-page-actions">
@@ -564,10 +645,18 @@ function ArticlePage({ article, onBack, onEdit, message, onDismissMessage }) {
           <ArrowRight size={18} />
           חזרה לרשימת החיפוש
         </button>
-        <button className="ghost-button" onClick={onEdit}>
-          <Edit3 size={18} />
-          עריכת מאמר
-        </button>
+        <div className="article-secondary-actions">
+          <button className="ghost-button" onClick={() => window.print()}>
+            <Printer size={18} />
+            הדפסה
+          </button>
+          {isAdmin && (
+            <button className="ghost-button" onClick={onEdit}>
+              <Edit3 size={18} />
+              עריכת מאמר
+            </button>
+          )}
+        </div>
       </div>
       <Notice message={message} onDismiss={onDismissMessage} />
       <article className="article-full">
@@ -594,15 +683,68 @@ function ArticlePage({ article, onBack, onEdit, message, onDismissMessage }) {
           <div className="article-body">
             <RichArticleBody content={article.body_text || article.extracted_text} />
           </div>
-          {article.original_filename && (
-            <a className="download-link" href={fileUrl(article.id)}>
-              <FileDown size={18} />
-              פתיחת הקובץ המקורי: {article.original_filename}
-            </a>
-          )}
+          <a className="download-link" href={articlePdfUrl(article.id)} download>
+            <FileDown size={18} />
+            הורדת המאמר כ-PDF
+          </a>
         </div>
       </article>
     </main>
+  );
+}
+
+function AdminLoginModal({ isConfigured, onClose, onLogin, onError }) {
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  async function submit(event) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const password = String(formData.get("password") || "");
+    setIsSubmitting(true);
+    try {
+      await onLogin(password);
+    } catch (error) {
+      onError(error);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <form className="modal admin-login-modal" onSubmit={submit}>
+        <div className="modal-header">
+          <h2>כניסת אדמין</h2>
+          <button type="button" aria-label="סגירה" onClick={onClose}>
+            <X size={20} />
+          </button>
+        </div>
+        {isConfigured ? (
+          <>
+            <Field label="סיסמה">
+              <input name="password" type="password" autoFocus required />
+            </Field>
+            <div className="modal-actions">
+              <button type="button" className="ghost-button" onClick={onClose}>
+                ביטול
+              </button>
+              <button type="submit" className="primary-button" disabled={isSubmitting}>
+                {isSubmitting ? "בודק..." : "כניסה"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="muted">כניסת אדמין עדיין לא הוגדרה. יש להגדיר בשרת משתנה סביבה בשם ADMIN_PASSWORD.</p>
+            <div className="modal-actions">
+              <button type="button" className="primary-button" onClick={onClose}>
+                סגירה
+              </button>
+            </div>
+          </>
+        )}
+      </form>
+    </div>
   );
 }
 

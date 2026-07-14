@@ -1,20 +1,44 @@
 ﻿from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
 import shutil
 import tempfile
+import time
 import uuid
 import re
 import html
+from html.parser import HTMLParser
+from io import BytesIO
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from bidi.algorithm import get_display
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_RIGHT
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 import requests
 
-from .config import ALLOWED_ORIGINS, SUPABASE_BUCKET, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL
+from .config import (
+    ADMIN_PASSWORD,
+    ADMIN_TOKEN_SECRET,
+    ALLOWED_ORIGINS,
+    PDF_FONT_PATH,
+    SUPABASE_BUCKET,
+    SUPABASE_SERVICE_ROLE_KEY,
+    SUPABASE_URL,
+)
 from .extractors import extract_text
 from .storage import (
     UPLOADS_DIR,
@@ -29,6 +53,195 @@ from .storage import (
     articles_from_rows,
     utc_now,
 )
+
+
+TOKEN_TTL_SECONDS = 60 * 60 * 12
+
+
+def create_admin_token(expires_at: int) -> str:
+    payload = {"exp": expires_at}
+    payload_data = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    signature = sign_admin_token(payload_data)
+    return f"{payload_data}.{signature}"
+
+
+def sign_admin_token(payload_data: str) -> str:
+    digest = hmac.new(
+        ADMIN_TOKEN_SECRET.encode("utf-8"),
+        payload_data.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def read_admin_token(token: str) -> dict:
+    try:
+        payload_data, signature = token.split(".", 1)
+        expected_signature = sign_admin_token(payload_data)
+        if not hmac.compare_digest(signature, expected_signature):
+            raise ValueError("bad signature")
+        padded = payload_data + "=" * (-len(payload_data) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="נדרשת כניסת אדמין") from exc
+    if int(payload.get("exp", 0)) < int(time.time()):
+        raise HTTPException(status_code=401, detail="פג תוקף כניסת האדמין")
+    return payload
+
+
+def require_admin(authorization: str | None = Header(default=None)) -> None:
+    if not ADMIN_PASSWORD:
+        raise HTTPException(status_code=503, detail="כניסת אדמין לא הוגדרה בשרת")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="נדרשת כניסת אדמין")
+    read_admin_token(authorization.removeprefix("Bearer ").strip())
+
+
+class ArticleHtmlTextParser(HTMLParser):
+    block_tags = {"blockquote", "br", "div", "h1", "h2", "h3", "li", "ol", "p", "ul"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag.lower() == "li":
+            self.parts.append("\n- ")
+        elif tag.lower() in self.block_tags:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in self.block_tags:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+    def text(self) -> str:
+        value = "".join(self.parts)
+        value = html.unescape(value)
+        value = re.sub(r"[ \t\r\f\v]+", " ", value)
+        value = re.sub(r"\n{3,}", "\n\n", value)
+        return value.strip()
+
+
+def html_to_text(value: str | None) -> str:
+    if not value:
+        return ""
+    if not re.search(r"</?[a-z][\s\S]*>", value, re.IGNORECASE):
+        return html.unescape(value).strip()
+    parser = ArticleHtmlTextParser()
+    parser.feed(value)
+    return parser.text()
+
+
+def pdf_font_path() -> str | None:
+    candidates = [
+        PDF_FONT_PATH,
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/Arial.ttf",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
+
+
+def pdf_font_name() -> str:
+    font_path = pdf_font_path()
+    if not font_path:
+        return "Helvetica"
+    font_name = "ArticleHebrewFont"
+    if font_name not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont(font_name, font_path))
+    return font_name
+
+
+def rtl_display(value: object) -> str:
+    text = str(value or "").strip()
+    return get_display(text) if text else ""
+
+
+def pdf_paragraph(value: str, style: ParagraphStyle) -> Paragraph:
+    lines = [rtl_display(line) for line in value.splitlines()]
+    return Paragraph("<br/>".join(html.escape(line) for line in lines), style)
+
+
+def article_pdf_bytes(article: dict) -> bytes:
+    buffer = BytesIO()
+    font_name = pdf_font_name()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=2 * cm,
+        leftMargin=2 * cm,
+        topMargin=1.8 * cm,
+        bottomMargin=1.8 * cm,
+        title=article.get("title") or "מאמר",
+    )
+    title_style = ParagraphStyle(
+        "ArticleTitle",
+        fontName=font_name,
+        fontSize=20,
+        leading=26,
+        alignment=TA_RIGHT,
+        textColor=colors.HexColor("#112a30"),
+        spaceAfter=8,
+    )
+    meta_style = ParagraphStyle(
+        "ArticleMeta",
+        fontName=font_name,
+        fontSize=10.5,
+        leading=15,
+        alignment=TA_RIGHT,
+        textColor=colors.HexColor("#526a70"),
+        spaceAfter=12,
+    )
+    body_style = ParagraphStyle(
+        "ArticleBody",
+        fontName=font_name,
+        fontSize=12,
+        leading=19,
+        alignment=TA_RIGHT,
+        textColor=colors.HexColor("#123841"),
+        spaceAfter=8,
+    )
+
+    story = [pdf_paragraph(article.get("title") or "מאמר", title_style)]
+    if article.get("subtitle"):
+        story.append(pdf_paragraph(article["subtitle"], meta_style))
+    meta_parts = [
+        article.get("parasha_name"),
+        f"גיליון {article['issue_number']}" if article.get("issue_number") else None,
+        article.get("author_name"),
+        article.get("publication_date"),
+    ]
+    tag_names = ", ".join(tag["name"] for tag in article.get("tags", []))
+    if tag_names:
+        meta_parts.append(tag_names)
+    story.append(pdf_paragraph(" | ".join(part for part in meta_parts if part), meta_style))
+    story.append(Spacer(1, 0.25 * cm))
+
+    body = html_to_text(article.get("body_text") or article.get("extracted_text"))
+    if not body:
+        body = "לא נשמר טקסט למאמר"
+    for paragraph in re.split(r"\n{2,}", body):
+        clean_paragraph = paragraph.strip()
+        if clean_paragraph:
+            story.append(pdf_paragraph(clean_paragraph, body_style))
+
+    doc.build(story)
+    return buffer.getvalue()
+
+
+def pdf_filename(article: dict) -> str:
+    title = re.sub(r'[\\/:*?"<>|]+', "-", str(article.get("title") or "article")).strip()
+    return f"{title or 'article'}.pdf"
+
 
 app = FastAPI(title="מערכת מאמרים לעלון פרשת שבוע")
 
@@ -51,6 +264,26 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/auth/status")
+def auth_status() -> dict[str, bool]:
+    return {"admin_configured": bool(ADMIN_PASSWORD)}
+
+
+@app.post("/api/auth/login")
+def admin_login(password: str = Form(...)) -> dict[str, str | int]:
+    if not ADMIN_PASSWORD:
+        raise HTTPException(status_code=503, detail="כניסת אדמין לא הוגדרה בשרת")
+    if not hmac.compare_digest(password, ADMIN_PASSWORD):
+        raise HTTPException(status_code=401, detail="סיסמת אדמין שגויה")
+    expires_at = int(time.time()) + TOKEN_TTL_SECONDS
+    return {"token": create_admin_token(expires_at), "expires_at": expires_at}
+
+
+@app.get("/api/auth/session")
+def admin_session(_: None = Depends(require_admin)) -> dict[str, bool]:
+    return {"is_admin": True}
+
+
 @app.get("/api/parashot")
 def list_parashot() -> list[dict]:
     with connect() as conn:
@@ -59,7 +292,7 @@ def list_parashot() -> list[dict]:
 
 
 @app.post("/api/parashot", status_code=201)
-def create_parasha(name: str = Form(...)) -> dict:
+def create_parasha(name: str = Form(...), _: None = Depends(require_admin)) -> dict:
     clean_name = name.strip()
     if not clean_name:
         raise HTTPException(status_code=422, detail="שם פרשה הוא שדה חובה")
@@ -84,7 +317,7 @@ def list_tags() -> list[dict]:
 
 
 @app.post("/api/tags", status_code=201)
-def create_tag(name: str = Form(...)) -> dict:
+def create_tag(name: str = Form(...), _: None = Depends(require_admin)) -> dict:
     clean_name = name.strip()
     if not clean_name:
         raise HTTPException(status_code=422, detail="שם תגית הוא שדה חובה")
@@ -113,6 +346,7 @@ def create_article(
     tags: str | None = Form(None),
     file: UploadFile | None = File(None),
     image: UploadFile | None = File(None),
+    _: None = Depends(require_admin),
 ) -> dict:
     clean_title = title.strip()
     clean_body = (body_text or "").strip()
@@ -282,6 +516,20 @@ def get_article(article_id: int) -> dict:
         return article_from_row(conn, row)
 
 
+@app.get("/api/articles/{article_id}/pdf")
+def download_article_pdf(article_id: int) -> Response:
+    with connect() as conn:
+        row = conn.execute(article_select_sql() + " WHERE articles.id = ?", (article_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="המאמר לא נמצא")
+        article = article_from_row(conn, row)
+    return Response(
+        article_pdf_bytes(article),
+        media_type="application/pdf",
+        headers={"Content-Disposition": content_disposition(pdf_filename(article))},
+    )
+
+
 @app.post("/api/articles/{article_id}")
 @app.put("/api/articles/{article_id}")
 def update_article(
@@ -296,6 +544,7 @@ def update_article(
     tags: str | None = Form(None),
     file: UploadFile | None = File(None),
     image: UploadFile | None = File(None),
+    _: None = Depends(require_admin),
 ) -> dict:
     clean_title = title.strip()
     if not clean_title:

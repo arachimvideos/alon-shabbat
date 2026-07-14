@@ -94,6 +94,18 @@ a {
   justify-self: end;
 }
 
+.site-header .admin-actions {
+  justify-self: end;
+}
+
+.admin-actions,
+.article-secondary-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .eyebrow,
 .parasha {
   margin: 0 0 6px;
@@ -864,6 +876,10 @@ th {
   margin-bottom: 0;
 }
 
+.admin-login-modal {
+  width: min(420px, 100%);
+}
+
 .modal-actions {
   justify-content: flex-start;
 }
@@ -980,6 +996,10 @@ dd {
     justify-self: stretch;
   }
 
+  .admin-actions {
+    justify-content: stretch;
+  }
+
   .hero-section {
     padding: 24px;
   }
@@ -1002,6 +1022,12 @@ dd {
     width: 100%;
   }
 
+  .admin-actions,
+  .article-secondary-actions {
+    width: 100%;
+    flex-direction: column;
+  }
+
   .mosaic {
     min-height: auto;
     grid-template-columns: 1fr;
@@ -1022,5 +1048,36 @@ dd {
 
   .toolbar-title {
     align-items: flex-start;
+  }
+}
+
+@media print {
+  :root,
+  body {
+    background: white;
+    color: #111;
+  }
+
+  body::before,
+  .article-page-actions,
+  .notice,
+  .download-link {
+    display: none !important;
+  }
+
+  .app-shell,
+  .article-page {
+    width: 100%;
+    max-width: none;
+    padding: 0;
+  }
+
+  .article-full {
+    border: 0;
+    box-shadow: none;
+  }
+
+  .article-hero-image {
+    max-height: 220px;
   }
 }

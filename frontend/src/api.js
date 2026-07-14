@@ -16,6 +16,11 @@ async function request(path, options) {
   return response.json();
 }
 
+function authHeaders() {
+  const token = localStorage.getItem("adminToken");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export function listParashot() {
   return request("/api/parashot");
 }
@@ -40,9 +45,29 @@ export function getArticle(id) {
   return request(`/api/articles/${id}`);
 }
 
+export function getAuthStatus() {
+  return request("/api/auth/status");
+}
+
+export function checkAdminSession() {
+  return request("/api/auth/session", {
+    headers: authHeaders(),
+  });
+}
+
+export function loginAdmin(password) {
+  const formData = new FormData();
+  formData.set("password", password);
+  return request("/api/auth/login", {
+    method: "POST",
+    body: formData,
+  });
+}
+
 export function createArticle(formData) {
   return request("/api/articles", {
     method: "POST",
+    headers: authHeaders(),
     body: formData,
   });
 }
@@ -50,12 +75,17 @@ export function createArticle(formData) {
 export function updateArticle(id, formData) {
   return request(`/api/articles/${id}`, {
     method: "POST",
+    headers: authHeaders(),
     body: formData,
   });
 }
 
 export function fileUrl(articleId) {
   return `${API_BASE}/api/articles/${articleId}/file`;
+}
+
+export function articlePdfUrl(articleId) {
+  return `${API_BASE}/api/articles/${articleId}/pdf`;
 }
 
 export function imageUrl(articleId) {

@@ -29,6 +29,8 @@ DATABASE_URL=postgresql://...
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=...
 SUPABASE_BUCKET=alon-shabbat-uploads
+ADMIN_PASSWORD=choose-a-strong-admin-password
+ADMIN_TOKEN_SECRET=choose-a-long-random-secret
 ```
 
 עבור `aloney-shabbat-web` ממלאים:

@@ -42,3 +42,6 @@ DB_PATH = path_env("DB_PATH", DATA_DIR / "articles.db")
 SUPABASE_URL = env_value("SUPABASE_URL").rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = "".join(env_value("SUPABASE_SERVICE_ROLE_KEY").split())
 SUPABASE_BUCKET = env_value("SUPABASE_BUCKET", "alon-shabbat-uploads")
+ADMIN_PASSWORD = env_value("ADMIN_PASSWORD")
+ADMIN_TOKEN_SECRET = env_value("ADMIN_TOKEN_SECRET") or ADMIN_PASSWORD
+PDF_FONT_PATH = env_value("PDF_FONT_PATH")
